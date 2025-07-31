@@ -1,29 +1,10 @@
-# Caddyfile for 3x-ui with Automatic HTTPS
+# Caddyfile
+# This file configures Caddy to act as a reverse proxy for 3x-ui.
 
-# Global options block.
-# Caddy will use the EMAIL environment variable for the ACME (Let's Encrypt) account.
-# It's highly recommended to provide a real email address.
-{
-    email {$EMAIL}
-    # For testing purposes, you can uncomment the staging server to avoid hitting
-    # Let's Encrypt's rate limits. Remove or comment out for production.
-    # acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
-}
-
-# Site block for your domain.
-# Caddy will automatically provision an SSL certificate for the domain
-# specified in the DOMAIN environment variable.
-{$DOMAIN} {
-    # Configure logging
-    log {
-        output file /var/log/caddy.log {
-            roll_size 10mb
-            roll_keep 5
-        }
-        level INFO
-    }
-
-    # Reverse proxy all incoming requests to the 3x-ui service,
-    # which runs on its default port 2053 inside the container.
-    reverse_proxy localhost:2053
+# Replace your-domain.com with your actual domain name.
+your-domain.com {
+    # The reverse_proxy directive tells Caddy to forward incoming requests
+    # to the 3x-ui container on port 2053.
+    # Caddy will automatically handle getting an SSL certificate for your domain.
+    reverse_proxy 3x-ui:2053
 }
