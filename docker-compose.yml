@@ -1,41 +1,49 @@
-# =================================================================
-# Docker Compose file for 3x-ui with Caddy Auto-SSL
-# =================================================================
-version: '3.8'
+# docker-compose.yml
+# This file sets up two services: 3x-ui and Caddy.
+# Caddy will act as a reverse proxy to provide SSL for 3x-ui.
+
+version: "3.8"
 
 services:
   3x-ui:
-    # Build the Docker image from the Dockerfile in the current directory.
-    build: .
-    # Set the container to always restart if it stops, for high availability.
-    restart: always
-    # A friendly name for your container.
+    # Using the official 3x-ui Docker image
+    image: ghcr.io/mhsanaei/3x-ui:latest
     container_name: 3x-ui
-    # --- IMPORTANT ---
-    # Set the environment variables required by Caddy and the entrypoint script.
-    # Replace the placeholder values with your actual domain and email address.
-    environment:
-      - DOMAIN=your-domain.com
-      - EMAIL=your-email@example.com
-    # Port mappings from host to container.
-    # You must expose ports 80 and 443 for automatic SSL to work.
-    ports:
-      - "443:443/tcp"
-      - "80:80/tcp"
-      # --- XRAY PORTS ---
-      # If you configure inbounds in the 3x-ui panel, you must map those ports here.
-      # For example, to open a range of ports for your users:
-      # - "10000-10010:10000-10010/tcp"
-      # - "10000-10010:10000-10010/udp"
-
-    # Volume mappings for persistent data.
-    # This ensures your panel settings and SSL certificates are saved
-    # even if you update or recreate the container.
+    restart: unless-stopped
     volumes:
-      - 3x-ui_db:/etc/3x-ui
-      - caddy_data:/etc/caddy/data
+      # Mount a volume for the 3x-ui database to persist data
+      - ./3x-ui-db:/etc/x-ui/
+    networks:
+      - proxy
+    # Exposing the default 3x-ui port. Caddy will connect to this internally.
+    # You don't need to expose this port to the host machine.
+    expose:
+      - 2053
 
-# Define the named volumes to be managed by Docker.
+  caddy:
+    # Using the official Caddy Docker image
+    image: caddy:latest
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      # Port 80 is used for the initial ACME HTTP-01 challenge for SSL
+      - "80:80"
+      # Port 443 is for HTTPS traffic
+      - "443:443"
+    volumes:
+      # Mount the Caddyfile for configuration
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      # Mount a volume for Caddy's data to persist SSL certificates
+      - caddy_data:/data
+      # Mount a volume for Caddy's configuration
+      - caddy_config:/config
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    # Create a network for the containers to communicate with each other
+
 volumes:
-  3x-ui_db:
   caddy_data:
+  caddy_config:
