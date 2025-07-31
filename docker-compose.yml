@@ -1,0 +1,41 @@
+# =================================================================
+# Docker Compose file for 3x-ui with Caddy Auto-SSL
+# =================================================================
+version: '3.8'
+
+services:
+  3x-ui:
+    # Build the Docker image from the Dockerfile in the current directory.
+    build: .
+    # Set the container to always restart if it stops, for high availability.
+    restart: always
+    # A friendly name for your container.
+    container_name: 3x-ui
+    # --- IMPORTANT ---
+    # Set the environment variables required by Caddy and the entrypoint script.
+    # Replace the placeholder values with your actual domain and email address.
+    environment:
+      - DOMAIN=your-domain.com
+      - EMAIL=your-email@example.com
+    # Port mappings from host to container.
+    # You must expose ports 80 and 443 for automatic SSL to work.
+    ports:
+      - "443:443/tcp"
+      - "80:80/tcp"
+      # --- XRAY PORTS ---
+      # If you configure inbounds in the 3x-ui panel, you must map those ports here.
+      # For example, to open a range of ports for your users:
+      # - "10000-10010:10000-10010/tcp"
+      # - "10000-10010:10000-10010/udp"
+
+    # Volume mappings for persistent data.
+    # This ensures your panel settings and SSL certificates are saved
+    # even if you update or recreate the container.
+    volumes:
+      - 3x-ui_db:/etc/3x-ui
+      - caddy_data:/etc/caddy/data
+
+# Define the named volumes to be managed by Docker.
+volumes:
+  3x-ui_db:
+  caddy_data:
