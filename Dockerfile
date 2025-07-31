@@ -11,6 +11,7 @@ ENV CADDY_FILE=/etc/caddy/Caddyfile
 # git (optional, but good for general use)
 # supervisor (to manage multiple processes, though a simple script is used here)
 # ca-certificates for HTTPS
+# gnupg for the gpg command used by Caddy's installation script
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     curl \
@@ -19,6 +20,7 @@ RUN apt-get update && \
     git \
     supervisor \
     ca-certificates \
+    gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Caddy from its official repository
