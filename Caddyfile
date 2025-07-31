@@ -1,0 +1,15 @@
+your_domain.com { # <<< IMPORTANT: Replace 'your_domain.com' with your actual domain name
+    # Reverse proxy requests to the 3x-ui panel running on localhost at port 2053 (default).
+    # Caddy will handle the SSL termination and forward unencrypted traffic to 3x-ui.
+    reverse_proxy localhost:2053
+
+    # Optional: Enable logging for Caddy. This outputs access and error logs to stdout,
+    # which can be viewed using `docker logs`.
+    log {
+        output stdout
+        format json
+    }
+
+    # Optional: Enable gzip compression for better performance.
+    # encode gzip
+}
