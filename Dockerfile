@@ -1,69 +1,79 @@
-# Use a lightweight Debian base image
-FROM debian:stable-slim
+# =================================================================
+# Dockerfile for 3x-ui with Caddy for Automatic SSL
+# =================================================================
 
-# Set environment variables for 3x-ui port and directories
-ENV XUI_PORT=2053
-ENV XUI_DIR=/opt/3x-ui
-ENV CADDY_FILE=/etc/caddy/Caddyfile
+# ---- Build Stage ----
+# Use the official Golang Alpine image to build the application.
+# Using a specific version ensures reproducibility.
+FROM golang:1.22-alpine AS builder
 
-# Install necessary packages:
-# curl, wget, unzip for downloading and extracting 3x-ui
-# git (optional, but good for general use)
-# supervisor (to manage multiple processes, though a simple script is used here)
-# ca-certificates for HTTPS
-# gnupg for the gpg command used by Caddy's installation script
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    curl \
-    wget \
-    unzip \
-    git \
-    supervisor \
-    ca-certificates \
-    gnupg \
-    && rm -rf /var/lib/apt/lists/*
+# Install build-time dependencies (git)
+RUN apk add --no-cache git
 
-# Install Caddy from its official repository
-# This ensures you get the latest stable version of Caddy.
-# For more details, see: https://caddyserver.com/docs/install#debian-ubuntu-raspbian
-RUN curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg && \
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list && \
-    apt-get update && \
-    apt-get install -y caddy
+# Set the working directory inside the container
+WORKDIR /app
 
-# Define build arguments for 3x-ui version and architecture
-# You should replace these with the desired version and your server's architecture (e.g., amd64, arm64, armv7)
-ARG XUI_VERSION="v2.1.0" # <<< IMPORTANT: Replace with the latest stable 3x-ui version
-ARG XUI_ARCH="amd64"    # <<< IMPORTANT: Replace with your server's CPU architecture
+# Clone the 3x-ui repository from GitHub
+# Cloning the main branch to get the latest version
+RUN git clone https://github.com/MHSanaei/3x-ui.git .
 
-# Download and install 3x-ui
-# Creates the directory, downloads the specified version, unzips it,
-# removes the zip file, and makes the 3x-ui executable.
-RUN mkdir -p ${XUI_DIR} && \
-    wget -O /tmp/3x-ui.zip "https://github.com/MHSanaei/3x-ui/releases/download/${XUI_VERSION}/3x-ui-linux-${XUI_ARCH}.zip" && \
-    unzip /tmp/3x-ui.zip -d ${XUI_DIR} && \
-    rm /tmp/3x-ui.zip && \
-    chmod +x ${XUI_DIR}/3x-ui
+# Build the 3x-ui binary
+# CGO_ENABLED=0 creates a static binary
+# -ldflags="-w -s" strips debug information, making the final binary smaller
+RUN CGO_ENABLED=0 go build -o /3x-ui -ldflags="-w -s" .
 
-# Copy the Caddyfile into the Docker image
-# This file configures Caddy for reverse proxy and SSL.
-COPY Caddyfile ${CADDY_FILE}
+# ---- Final Stage ----
+# Use a minimal Alpine image for the final container to reduce size
+FROM alpine:latest
 
-# Copy the startup script into the Docker image and make it executable
-# This script will start both 3x-ui and Caddy.
-COPY start.sh /usr/local/bin/start.sh
-RUN chmod +x /usr/local/bin/start.sh
+# Add metadata labels to the image
+LABEL maintainer="Gemini"
+LABEL description="3x-ui with Caddy for automatic SSL certificate provisioning."
 
-# Expose the necessary ports:
-# 80 (HTTP) and 443 (HTTPS) for Caddy to handle web traffic and SSL.
-# XUI_PORT for 3x-ui's internal listening port (default 2053).
-EXPOSE 80
-EXPOSE 443
-EXPOSE ${XUI_PORT}
+# Install runtime dependencies:
+# - caddy: The web server for reverse proxy and auto-SSL.
+# - ca-certificates: For SSL/TLS connections.
+# - wget & unzip: Utilities to download and extract xray-core.
+RUN apk add --no-cache caddy ca-certificates wget unzip
 
-# Set the working directory for the container
-WORKDIR ${XUI_DIR}
+# Set the working directory for the application
+WORKDIR /opt/3x-ui
 
-# Define the command to run when the container starts
-# This executes the start.sh script.
-CMD ["/usr/local/bin/start.sh"]
+# Download and install the latest version of xray-core
+# This logic automatically finds the latest release for amd64 architecture.
+# If you use ARM (e.g., Raspberry Pi), you'll need to adjust the grep filter.
+RUN LATEST_XRAY_URL=$(wget -qO- "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep '"browser_download_url":' | grep 'linux-64.zip"' | cut -d'"' -f4) && \
+    echo "Downloading Xray-core from: $LATEST_XRAY_URL" && \
+    wget -O /tmp/xray.zip "$LATEST_XRAY_URL" && \
+    unzip /tmp/xray.zip -d /usr/local/bin/ xray geoip.dat geosite.dat && \
+    chmod +x /usr/local/bin/xray && \
+    rm /tmp/xray.zip
+
+# Copy the built 3x-ui binary from the builder stage
+COPY --from=builder /3x-ui /usr/local/bin/3x-ui
+
+# Copy the web assets required by the 3x-ui panel
+COPY --from=builder /app/web ./web
+
+# Create directories for persistent data and logs
+# /etc/3x-ui: for the 3x-ui database (db/3x-ui.db)
+# /etc/caddy/data: for Caddy's state, including SSL certificates
+# /var/log: for caddy logs
+RUN mkdir -p /etc/3x-ui /etc/caddy/data /var/log
+
+# Copy the Caddyfile configuration and the entrypoint script into the image
+COPY Caddyfile /etc/caddy/Caddyfile
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Expose ports 80 and 443 for Caddy's automatic HTTPS
+# Port 80 is used for the ACME HTTP-01 challenge and HTTP-to-HTTPS redirection
+# Port 443 is used for HTTPS traffic
+EXPOSE 80 443
+
+# Define volumes for persistent data. This ensures your settings and certificates
+# are not lost when the container is recreated.
+VOLUME ["/etc/3x-ui", "/etc/caddy/data"]
+
+# Set the entrypoint for the container
+ENTRYPOINT ["/entrypoint.sh"]
