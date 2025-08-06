@@ -1,49 +1,53 @@
-# docker-compose.yml
-# This file sets up two services: 3x-ui and Caddy.
-# Caddy will act as a reverse proxy to provide SSL for 3x-ui.
-
-version: "3.8"
+version: '3.8'
 
 services:
-  3x-ui:
-    # Using the official 3x-ui Docker image
+  x-ui:
     image: ghcr.io/mhsanaei/3x-ui:latest
-    container_name: 3x-ui
+    container_name: x-ui
     restart: unless-stopped
     volumes:
-      # Mount a volume for the 3x-ui database to persist data
-      - ./3x-ui-db:/etc/x-ui/
-    networks:
-      - proxy
-    # Exposing the default 3x-ui port. Caddy will connect to this internally.
-    # You don't need to expose this port to the host machine.
+      - ./x-ui-data:/etc/x-ui
+      - ./x-ui-logs:/var/log/x-ui
+      - caddy_certs:/etc/caddy/certs:ro  # Mount Caddy's certificates
     expose:
-      - 2053
+      - "2053"
+    environment:
+      - XRAY_VMESS_AEAD_FORCED=false
+      - DOMAIN=${DOMAIN}  # Pass domain from environment
+    networks:
+      - x-ui-network
+    command: sh -c '
+      echo "Waiting for Caddy to generate certificates...";
+      while [ ! -f /etc/caddy/certs/$${DOMAIN}/$${DOMAIN}.crt ]; do sleep 2; done;
+      echo "Certificates found, starting X-UI...";
+      /app/x-ui
+    '
 
   caddy:
-    # Using the official Caddy Docker image
     image: caddy:latest
     container_name: caddy
     restart: unless-stopped
     ports:
-      # Port 80 is used for the initial ACME HTTP-01 challenge for SSL
       - "80:80"
-      # Port 443 is for HTTPS traffic
       - "443:443"
+      - "443:443/udp"
     volumes:
-      # Mount the Caddyfile for configuration
+      - ./caddy_data:/data
+      - ./caddy_config:/config
       - ./Caddyfile:/etc/caddy/Caddyfile
-      # Mount a volume for Caddy's data to persist SSL certificates
-      - caddy_data:/data
-      # Mount a volume for Caddy's configuration
-      - caddy_config:/config
+      - caddy_certs:/etc/caddy/certs
+    environment:
+      - DOMAIN=${DOMAIN}
+    depends_on:
+      - x-ui
     networks:
-      - proxy
-
-networks:
-  proxy:
-    # Create a network for the containers to communicate with each other
+      - x-ui-network
 
 volumes:
-  caddy_data:
-  caddy_config:
+  caddy_certs:
+  x-ui-data:
+  x-ui-logs:
+
+networks:
+  x-ui-network:
+    driver: bridge
