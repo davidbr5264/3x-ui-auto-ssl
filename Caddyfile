@@ -1,10 +1,13 @@
-# Caddyfile
-# This file configures Caddy to act as a reverse proxy for 3x-ui.
-
-# Replace your-domain.com with your actual domain name.
-your-domain.com {
-    # The reverse_proxy directive tells Caddy to forward incoming requests
-    # to the 3x-ui container on port 2053.
-    # Caddy will automatically handle getting an SSL certificate for your domain.
-    reverse_proxy 3x-ui:2053
+{$DOMAIN} {
+    reverse_proxy x-ui:2053 {
+        header_up Host {host}
+        header_up X-Real-IP {remote}
+        header_up X-Forwarded-For {remote}
+        header_up X-Forwarded-Proto {scheme}
+    }
+    
+    tls {
+        protocols tls1.2 tls1.3
+        ciphers TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    }
 }
