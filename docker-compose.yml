@@ -8,20 +8,21 @@ services:
     volumes:
       - ./x-ui-data:/etc/x-ui
       - ./x-ui-logs:/var/log/x-ui
-      - caddy_certs:/etc/caddy/certs:ro  # Mount Caddy's certificates
+      - caddy_certs:/etc/caddy/certs:ro
     expose:
       - "2053"
     environment:
       - XRAY_VMESS_AEAD_FORCED=false
-      - DOMAIN=${DOMAIN}  # Pass domain from environment
+      - DOMAIN=${DOMAIN}
     networks:
       - x-ui-network
-    command: sh -c '
-      echo "Waiting for Caddy to generate certificates...";
+    command: >
+      sh -c "
+      echo 'Waiting for Caddy to generate certificates...';
       while [ ! -f /etc/caddy/certs/$${DOMAIN}/$${DOMAIN}.crt ]; do sleep 2; done;
-      echo "Certificates found, starting X-UI...";
+      echo 'Certificates found, starting X-UI...';
       /app/x-ui
-    '
+      "
 
   caddy:
     image: caddy:latest
