@@ -247,7 +247,7 @@ else
     chmod 644 /usr/local/etc/xray/ssl/*.pem
     
     # Update config to use local copies
-    sed -i 's|/etc/letsencrypt/live/$DOMAIN|/usr/local/etc/xray/ssl|g' /usr/local/etc/xray/config.json
+    sed -i "s|/etc/letsencrypt/live/$DOMAIN|/usr/local/etc/xray/ssl|g" /usr/local/etc/xray/config.json
     systemctl restart xray
 fi
 
@@ -260,6 +260,9 @@ fi
 
 # Generate client config
 print_status "Generating client configuration..."
+# URL encode the configuration for QR code (simple version without jq)
+VLESS_URL="vless://$UUID@$DOMAIN:443?encryption=none&flow=xtls-rprx-vision&security=tls&sni=$DOMAIN&type=ws&path=${WS_PATH}#Xray-VLESS-WS-TLS"
+
 cat > xray-client-config.txt << EOF
 =============================================
 VLESS + WS + TLS + CDN Configuration
@@ -275,10 +278,10 @@ SNI: $DOMAIN
 Flow: xtls-rprx-vision
 
 Xray Client Configuration (V2RayN, etc.):
-vless://$UUID@$DOMAIN:443?encryption=none&flow=xtls-rprx-vision&security=tls&sni=$DOMAIN&type=ws&path=${WS_PATH}#Xray-VLESS-WS-TLS
+$VLESS_URL
 
 QR Code for V2RayN:
-https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=$(echo -n "vless://$UUID@$DOMAIN:443?encryption=none&flow=xtls-rprx-vision&security=tls&sni=$DOMAIN&type=ws&path=${WS_PATH}#Xray-VLESS-WS-TLS" | jq -s -R -r @uri)
+https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=vless://$UUID@$DOMAIN:443?encryption=none&flow=xtls-rprx-vision&security=tls&sni=$DOMAIN&type=ws&path=${WS_PATH}#Xray-VLESS-WS-TLS
 
 Clash Configuration:
 - name: Xray-VLESS-WS-TLS
@@ -319,3 +322,17 @@ else
     print_info "systemctl status xray"
     print_info "systemctl status nginx"
 fi
+
+# Show final success message
+echo
+print_status "✅ Setup completed successfully!"
+print_info "Your Xray node is ready with the following details:"
+print_info "Domain: $DOMAIN"
+print_info "UUID: $UUID"
+print_info "WebSocket Path: $WS_PATH"
+print_info "Port: 443 (with TLS)"
+echo
+print_warning "⚠️  Don't forget to:"
+print_warning "1. Point your domain $DOMAIN to $PUBLIC_IP"
+print_warning "2. Enable Cloudflare proxy (orange cloud) if using CDN"
+print_warning "3. Open ports 80/443 in firewall if needed"
