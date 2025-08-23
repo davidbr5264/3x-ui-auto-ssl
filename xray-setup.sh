@@ -4,6 +4,7 @@
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Function to print colored output
@@ -17,6 +18,10 @@ print_error() {
 
 print_warning() {
     echo -e "${YELLOW}[!]${NC} $1"
+}
+
+print_info() {
+    echo -e "${BLUE}[*]${NC} $1"
 }
 
 # Check if running as root
@@ -39,18 +44,49 @@ echo
 print_warning "Please make sure your domain is pointing to this server's IP: $PUBLIC_IP"
 read -p "Enter your domain name (e.g., example.com): " DOMAIN
 
+# Check if port 80 is in use and stop conflicting services
+print_status "Checking for services using port 80..."
+if lsof -i :80 >/dev/null 2>&1; then
+    print_warning "Port 80 is already in use. Stopping conflicting services..."
+    
+    # Stop common services that might use port 80
+    systemctl stop nginx apache2 lighttpd httpd >/dev/null 2>&1
+    pkill -f "python.*80" >/dev/null 2>&1
+    pkill -f "node.*80" >/dev/null 2>&1
+    
+    # Wait a moment and check again
+    sleep 2
+    if lsof -i :80 >/dev/null 2>&1; then
+        print_error "Could not free port 80. Please manually stop the service using port 80 and run the script again."
+        print_info "You can check what's using port 80 with: sudo lsof -i :80"
+        exit 1
+    fi
+fi
+
 # Install dependencies
 print_status "Installing dependencies..."
 apt update && apt upgrade -y
 apt install -y curl wget unzip certbot nginx
 
+# Stop nginx temporarily for certbot
+systemctl stop nginx >/dev/null 2>&1
+
 # Install Xray
 print_status "Installing Xray..."
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-# Create SSL certificate
-print_status "Creating SSL certificate..."
+# Create SSL certificate using standalone method
+print_status "Creating SSL certificate using standalone method..."
 certbot certonly --standalone --agree-tos --register-unsafely-without-email -d $DOMAIN --non-interactive
+
+if [ $? -ne 0 ]; then
+    print_error "SSL certificate creation failed!"
+    print_info "Common issues:"
+    print_info "1. Domain not pointing to this server's IP"
+    print_info "2. Port 80 still in use by another process"
+    print_info "3. Firewall blocking port 80"
+    exit 1
+fi
 
 # Create Xray config
 print_status "Creating Xray configuration..."
@@ -58,7 +94,7 @@ cat > /usr/local/etc/xray/config.json << EOF
 {
     "inbounds": [
         {
-            "port": 443,
+            "port": 10000,
             "protocol": "vless",
             "settings": {
                 "clients": [
@@ -100,7 +136,12 @@ cat > /etc/nginx/sites-available/xray << EOF
 server {
     listen 80;
     server_name $DOMAIN;
-    return 301 https://\$server_name\$request_uri;
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+    location / {
+        return 301 https://\$server_name\$request_uri;
+    }
 }
 
 server {
@@ -114,7 +155,7 @@ server {
 
     location $WS_PATH {
         proxy_redirect off;
-        proxy_pass http://127.0.0.1:443;
+        proxy_pass https://127.0.0.1:10000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -133,11 +174,24 @@ EOF
 ln -sf /etc/nginx/sites-available/xray /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 
+# Create webroot for ACME challenges
+mkdir -p /var/www/html
+chown -R www-data:www-data /var/www/html
+
 # Restart services
 print_status "Restarting services..."
 systemctl restart nginx
 systemctl restart xray
 systemctl enable nginx xray
+
+# Check if services are running
+if systemctl is-active --quiet xray && systemctl is-active --quiet nginx; then
+    print_status "Services started successfully!"
+else
+    print_error "Some services failed to start. Checking status..."
+    systemctl status xray nginx --no-pager -l
+    exit 1
+fi
 
 # Generate client config
 print_status "Generating client configuration..."
@@ -180,7 +234,14 @@ print_status "Installation completed successfully!"
 print_warning "Client configuration saved to: xray-client-config.txt"
 print_warning "Please check the file for connection details"
 echo
-print_warning "Don't forget to:"
-print_warning "1. Point your domain to this server's IP: $PUBLIC_IP"
-print_warning "2. Enable CDN (Cloudflare proxy) if desired"
-print_warning "3. Open ports 80 and 443 in your firewall if needed"
+print_warning "Important notes:"
+print_warning "1. Make sure your domain $DOMAIN points to $PUBLIC_IP"
+print_warning "2. Open ports 80 and 443 in your firewall if needed"
+print_warning "3. For CDN: Enable Cloudflare proxy (orange cloud) for your domain"
+print_warning "4. Test your connection before relying on it"
+
+# Show firewall commands if needed
+echo
+print_info "If you need to open firewall ports:"
+print_info "UFW: ufw allow 80/tcp && ufw allow 443/tcp"
+print_info "Firewalld: firewall-cmd --add-port=80/tcp --add-port=443/tcp --permanent && firewall-cmd --reload"
