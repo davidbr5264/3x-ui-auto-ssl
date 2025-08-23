@@ -88,10 +88,21 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Create Xray config
+# Fix certificate permissions
+print_status "Fixing SSL certificate permissions..."
+chmod 755 /etc/letsencrypt/{live,archive}
+chmod 755 /etc/letsencrypt/live/$DOMAIN
+chmod 644 /etc/letsencrypt/live/$DOMAIN/*.pem
+chmod 755 /etc/letsencrypt/archive/$DOMAIN
+chmod 644 /etc/letsencrypt/archive/$DOMAIN/*.pem
+
+# Create Xray config with proper certificate paths
 print_status "Creating Xray configuration..."
 cat > /usr/local/etc/xray/config.json << EOF
 {
+    "log": {
+        "loglevel": "warning"
+    },
     "inbounds": [
         {
             "port": 10000,
@@ -119,16 +130,45 @@ cat > /usr/local/etc/xray/config.json << EOF
                 "wsSettings": {
                     "path": "$WS_PATH"
                 }
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": ["http", "tls"]
             }
         }
     ],
     "outbounds": [
         {
-            "protocol": "freedom"
+            "protocol": "freedom",
+            "settings": {}
+        },
+        {
+            "protocol": "blackhole",
+            "settings": {},
+            "tag": "blocked"
         }
-    ]
+    ],
+    "routing": {
+        "domainStrategy": "AsIs",
+        "rules": [
+            {
+                "type": "field",
+                "ip": ["geoip:private"],
+                "outboundTag": "blocked"
+            }
+        ]
+    }
 }
 EOF
+
+# Fix Xray service permissions
+print_status "Fixing Xray service permissions..."
+if [ -f /etc/systemd/system/xray.service ]; then
+    # Change Xray user to root for certificate access
+    sed -i 's/User=nobody/User=root/' /etc/systemd/system/xray.service
+    sed -i 's/Group=nobody/Group=root/' /etc/systemd/system/xray.service
+    systemctl daemon-reload
+fi
 
 # Create Nginx config for CDN
 print_status "Configuring Nginx for CDN..."
@@ -152,6 +192,12 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+
+    # Security headers
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-XSS-Protection "1; mode=block" always;
 
     location $WS_PATH {
         proxy_redirect off;
@@ -162,6 +208,7 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     location / {
@@ -185,12 +232,30 @@ systemctl restart xray
 systemctl enable nginx xray
 
 # Check if services are running
-if systemctl is-active --quiet xray && systemctl is-active --quiet nginx; then
-    print_status "Services started successfully!"
+print_status "Checking service status..."
+if systemctl is-active --quiet xray; then
+    print_status "Xray service is running successfully!"
 else
-    print_error "Some services failed to start. Checking status..."
-    systemctl status xray nginx --no-pager -l
-    exit 1
+    print_error "Xray service failed to start. Checking logs..."
+    journalctl -u xray -n 10 --no-pager
+    print_info "Trying alternative approach..."
+    
+    # Alternative: Copy certificates to Xray directory
+    mkdir -p /usr/local/etc/xray/ssl
+    cp /etc/letsencrypt/live/$DOMAIN/fullchain.pem /usr/local/etc/xray/ssl/
+    cp /etc/letsencrypt/live/$DOMAIN/privkey.pem /usr/local/etc/xray/ssl/
+    chmod 644 /usr/local/etc/xray/ssl/*.pem
+    
+    # Update config to use local copies
+    sed -i 's|/etc/letsencrypt/live/$DOMAIN|/usr/local/etc/xray/ssl|g' /usr/local/etc/xray/config.json
+    systemctl restart xray
+fi
+
+if systemctl is-active --quiet nginx; then
+    print_status "Nginx service is running successfully!"
+else
+    print_error "Nginx service failed to start."
+    journalctl -u nginx -n 10 --no-pager
 fi
 
 # Generate client config
@@ -207,9 +272,13 @@ Transport: WebSocket (WS)
 Path: $WS_PATH
 TLS: Enabled
 SNI: $DOMAIN
+Flow: xtls-rprx-vision
 
 Xray Client Configuration (V2RayN, etc.):
-vless://$UUID@$DOMAIN:443?encryption=none&security=tls&sni=$DOMAIN&type=ws&path=${WS_PATH}#Xray-VLESS-WS-TLS
+vless://$UUID@$DOMAIN:443?encryption=none&flow=xtls-rprx-vision&security=tls&sni=$DOMAIN&type=ws&path=${WS_PATH}#Xray-VLESS-WS-TLS
+
+QR Code for V2RayN:
+https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=$(echo -n "vless://$UUID@$DOMAIN:443?encryption=none&flow=xtls-rprx-vision&security=tls&sni=$DOMAIN&type=ws&path=${WS_PATH}#Xray-VLESS-WS-TLS" | jq -s -R -r @uri)
 
 Clash Configuration:
 - name: Xray-VLESS-WS-TLS
@@ -222,26 +291,31 @@ Clash Configuration:
   network: ws
   ws-opts:
     path: $WS_PATH
+  flow: xtls-rprx-vision
 
 For CDN (Cloudflare):
 1. Enable proxy (orange cloud) for your domain in Cloudflare
 2. Make sure SSL/TLS encryption mode is set to "Full"
 3. Use the same configuration as above
 
+Test command:
+curl -x http://127.0.0.1:10809 https://www.google.com
+
 EOF
 
-print_status "Installation completed successfully!"
+print_status "Installation completed!"
 print_warning "Client configuration saved to: xray-client-config.txt"
 print_warning "Please check the file for connection details"
-echo
-print_warning "Important notes:"
-print_warning "1. Make sure your domain $DOMAIN points to $PUBLIC_IP"
-print_warning "2. Open ports 80 and 443 in your firewall if needed"
-print_warning "3. For CDN: Enable Cloudflare proxy (orange cloud) for your domain"
-print_warning "4. Test your connection before relying on it"
 
-# Show firewall commands if needed
-echo
-print_info "If you need to open firewall ports:"
-print_info "UFW: ufw allow 80/tcp && ufw allow 443/tcp"
-print_info "Firewalld: firewall-cmd --add-port=80/tcp --add-port=443/tcp --permanent && firewall-cmd --reload"
+# Test connection
+print_status "Testing configuration..."
+sleep 3
+if systemctl is-active --quiet xray && systemctl is-active --quiet nginx; then
+    print_status "All services are running successfully!"
+    print_info "You can check Xray logs with: journalctl -u xray -f"
+    print_info "You can check Nginx logs with: journalctl -u nginx -f"
+else
+    print_warning "Some services may not be running properly. Please check:"
+    print_info "systemctl status xray"
+    print_info "systemctl status nginx"
+fi
